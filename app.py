@@ -1,9 +1,10 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+import os
 
 import document_processor
-import vector_store
+from store_manager import store
 import llm_client
 from dotenv import load_dotenv
 
@@ -11,7 +12,6 @@ load_dotenv()
 
 app = FastAPI(title="Silent Assistant")
 
-# Add CORS so frontend can communicate
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,57 +22,46 @@ app.add_middleware(
 
 @app.get("/debug-state")
 async def debug_state():
-    import os
-    files = os.listdir(".")
     return {
-        "memory_docs_count": len(vector_store.documents_store),
-        "faiss_index_ready": vector_store.faiss_index is not None,
-        "files_in_cwd": files,
-        "state_file_path": vector_store.STATE_FILE,
-        "state_file_on_disk": os.path.exists(vector_store.STATE_FILE),
+        "memory_docs_count": len(store.documents_store),
+        "index_ready": store.faiss_index is not None,
+        "index_count": store.faiss_index.ntotal if store.faiss_index else 0,
+        "state_file_disk": os.path.exists(os.path.join(os.path.dirname(__file__), "final_vector_state.pkl")),
         "cwd": os.getcwd()
     }
 
 @app.get("/")
 async def root():
-    return {"message": "Silent Assistant Backend is running!"}
+    return {"message": "Silent Assistant Backend is active."}
 
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
     try:
         contents = await file.read()
-        
-        # Extract text
         text = document_processor.process_document(file.filename, contents)
-        
-        # Chunk text
         chunks = document_processor.chunk_text(text)
         
-        # Check duplicate
-        is_duplicate, similar_file = vector_store.check_duplicate(chunks)
-        
-        # Store embeddings
-        vector_store.add_document(file.filename, chunks)
+        # Store using singleton
+        store.add_document(file.filename, chunks)
         
         return {
             "message": f"Successfully processed {file.filename}.",
             "chunks_processed": len(chunks),
-            "duplicate_warning": is_duplicate,
-            "similar_file": similar_file
+            "total_in_memory": len(store.documents_store)
         }
     except Exception as e:
+        print(f"UPLOAD ERROR: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/ask")
 async def ask_question(query: str = Form(...)):
     try:
-        # 1. Get semantic results
-        semantic_chunks = vector_store.search(query, top_k=8)
+        # Get results from singleton
+        semantic_chunks = store.search(query, top_k=8)
         
-        # 2. Always include first 2 chunks (for titles/metadata)
-        first_chunks = vector_store.documents_store[:2]
+        # Merge with first 2 chunks for context
+        first_chunks = store.documents_store[:2]
         
-        # 3. Combine and remove duplicates
         seen_ids = set()
         context_chunks = []
         for c in (first_chunks + semantic_chunks):
@@ -81,23 +70,26 @@ async def ask_question(query: str = Form(...)):
                 seen_ids.add(c["id"])
         
         if not context_chunks:
-            return {"answer": "No documents available. Please upload a document first.", "context": []}
+            return {
+                "answer": "No documents found in my memory. Please (re)upload a document.", 
+                "context": [],
+                "debug_docs_count": len(store.documents_store)
+            }
             
-        # Generate Answer
         answer = llm_client.generate_answer(query, context_chunks)
         
         return {
             "answer": answer,
             "context": [c["text"] for c in context_chunks],
             "debug": {
-                "total_docs": len(vector_store.documents_store),
+                "total_docs": len(store.documents_store),
                 "context_size": len(context_chunks)
             }
         }
     except Exception as e:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"{str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
