@@ -3,6 +3,8 @@ uvicorn
 python-multipart
 PyPDF2
 python-docx
+sentence-transformers
+faiss-cpu
 requests
 numpy
 python-dotenv

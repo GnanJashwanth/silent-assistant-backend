@@ -99,18 +99,18 @@ SILENT ASSISTANT RESPONSE:"""
                 data = response.json()
                 return data["candidates"][0]["content"]["parts"][0]["text"]
             elif response.status_code == 429:
-                # Quota exceeded - wait and retry
-                wait_time = (attempt + 1) * 15  # 15s, 30s, 45s
+                # Quota exceeded
+                wait_time = (attempt + 1) * 15
                 if attempt < 2:
-                    print(f"[Retry] Quota limit hit, waiting {wait_time}s before retry {attempt+2}/3...")
+                    print(f"[Retry] Quota hit, waiting {wait_time}s...")
                     time.sleep(wait_time)
                     continue
                 else:
-                    return "Gemini API quota temporarily exceeded. Please wait 1-2 minutes and try again."
+                    return "Gemini API quota exceeded. Falling back to raw context:\n\n" + context_text[:1000]
             else:
-                error_msg = response.json().get("error", {}).get("message", response.text[:200])
-                return f"Gemini API Error ({response.status_code}): {error_msg}"
+                return f"Offline/API Error: I found relevant info in the document but cannot generate a summary. \n\nDirect matches:\n{context_text[:1000]}"
         except Exception as e:
-            return f"Connection Error: {str(e)}"
+            if attempt < 2: continue
+            return f"Offline Mode: I cannot reach the AI, but here is what I found in the document:\n\n{context_text[:1000]}"
     
-    return "Unable to get a response after multiple retries. Please wait a moment and try again."
+    return "Offline Mode: Connection failed. Found relevant sections but could not generate answer."

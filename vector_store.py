@@ -1,72 +1,92 @@
 import numpy as np
-import llm_client
-import pickle
 import os
+import pickle
+import faiss
+from sentence_transformers import SentenceTransformer
 
-# Local persistence file
-STATE_FILE = "vector_state.pkl"
+# Absolute path for persistence to avoid CWD issues
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATE_FILE = os.path.join(BASE_DIR, "vector_state_local.pkl")
 
-# Global data containers
+# Global model and indices
+_model = None
 documents_store = []
-vector_store = None
+faiss_index = None
+
+def get_model():
+    global _model
+    if _model is None:
+        print("DEBUG: Loading local embedding model (offline)...")
+        _model = SentenceTransformer('all-MiniLM-L6-v2')
+    return _model
 
 def _save_state():
-    """Saves current memory state to a local file."""
-    global documents_store, vector_store
+    global documents_store
     try:
         with open(STATE_FILE, 'wb') as f:
-            pickle.dump((documents_store, vector_store), f)
-        print(f"DEBUG: Saved {len(documents_store)} chunks locally.")
+            pickle.dump(documents_store, f)
+        print(f"DEBUG: Successfully saved {len(documents_store)} chunks to {STATE_FILE}.")
     except Exception as e:
-        print(f"DEBUG ERROR: Save failed: {e}")
+        print(f"DEBUG ERROR: Save failed to {STATE_FILE}: {e}")
 
 def _load_state():
-    """Loads state from local file into memory."""
-    global documents_store, vector_store
-    
-    # If already loaded in memory, don't reload unless empty
-    if len(documents_store) > 0:
+    global documents_store, faiss_index
+    # If already loaded in memory AND index exists, we are good
+    if len(documents_store) > 0 and faiss_index is not None:
         return
 
     if os.path.exists(STATE_FILE):
         try:
+            print(f"DEBUG: Loading state from {STATE_FILE}...")
             with open(STATE_FILE, 'rb') as f:
-                loaded_docs, loaded_vectors = pickle.load(f)
+                loaded_docs = pickle.load(f)
+                
+                # In-place update to preserve references in other modules (like app.py)
                 documents_store.clear()
                 documents_store.extend(loaded_docs)
-                vector_store = loaded_vectors
-            print(f"DEBUG: Loaded {len(documents_store)} chunks from disk.")
+            
+            # Rebuild index if we have documents
+            if documents_store:
+                print(f"DEBUG: Rebuilding index for {len(documents_store)} chunks...")
+                model = get_model()
+                texts = [doc["text"] for doc in documents_store]
+                embeddings = model.encode(texts)
+                
+                dim = embeddings.shape[1]
+                faiss_index = faiss.IndexFlatIP(dim)
+                faiss.normalize_L2(embeddings)
+                faiss_index.add(embeddings)
+                print(f"DEBUG: Index rebuilt successfully with {faiss_index.ntotal} vectors.")
+            else:
+                print("DEBUG: State file was empty.")
         except Exception as e:
-            print(f"DEBUG ERROR: Load failed: {e}")
-
-def np_normalize(vecs):
-    v = np.array(vecs)
-    if v.ndim == 1:
-        v = v.reshape(1, -1)
-    norms = np.linalg.norm(v, axis=1, keepdims=True)
-    return v / np.maximum(norms, 1e-10)
+            print(f"DEBUG ERROR: Load failed from {STATE_FILE}: {e}")
+    else:
+        print(f"DEBUG: No persistence file at {STATE_FILE}. Starting with empty store.")
 
 def add_document(filename, chunks):
-    global documents_store, vector_store
+    global documents_store, faiss_index
+    
+    # Reload existing documents first
+    _load_state()
     
     if not chunks:
-        print("DEBUG: No text found in document.")
+        print("DEBUG: Warning - No text found in document.")
         return
         
-    print(f"DEBUG: Getting embeddings for {len(chunks)} chunks...")
-    embeddings = llm_client.get_embeddings(chunks)
-    if not embeddings:
-        print("DEBUG ERROR: API failed to return embeddings.")
-        return
-        
-    embeddings = np_normalize(embeddings)
+    model = get_model()
+    print(f"DEBUG: Generating embeddings for {len(chunks)} chunks of {filename}...")
+    embeddings = model.encode(chunks)
+    
+    faiss.normalize_L2(embeddings)
     
     start_idx = len(documents_store)
     
-    if vector_store is None:
-        vector_store = embeddings
-    else:
-        vector_store = np.vstack([vector_store, embeddings])
+    if faiss_index is None:
+        dim = embeddings.shape[1]
+        faiss_index = faiss.IndexFlatIP(dim)
+        
+    faiss_index.add(embeddings)
     
     for i, chunk in enumerate(chunks):
         documents_store.append({
@@ -75,45 +95,54 @@ def add_document(filename, chunks):
             "id": start_idx + i
         })
     
-    print(f"DEBUG: Successfully added {filename}. Total: {len(documents_store)}")
+    print(f"DEBUG: Added {filename}. Current memory count: {len(documents_store)}")
     _save_state()
 
 def check_duplicate(chunks, threshold=0.98):
     _load_state()
-    if len(documents_store) == 0 or not chunks or vector_store is None:
+    if len(documents_store) == 0 or not chunks or faiss_index is None:
         return False, None
     
-    embeddings = llm_client.get_embeddings(chunks[:2])
-    if not embeddings: return False, None
-        
-    embeddings = np_normalize(embeddings)
-    similarities = np.dot(embeddings, vector_store.T)
+    model = get_model()
+    check_chunks = chunks[:2]
+    embeddings = model.encode(check_chunks)
+    faiss.normalize_L2(embeddings)
     
-    for i in range(len(embeddings)):
-        max_idx = np.argmax(similarities[i])
-        if similarities[i][max_idx] > threshold:
-            return True, documents_store[max_idx]["filename"]
+    D, I = faiss_index.search(embeddings, 1)
+    
+    for i, dist in enumerate(D):
+        if dist[0] > threshold:
+            idx = I[i][0]
+            if idx != -1 and idx < len(documents_store):
+                return True, documents_store[idx]["filename"]
                 
     return False, None
 
 def search(query, top_k=5):
+    # Ensure memory is populated
     _load_state()
-    global vector_store
+    global faiss_index
     
-    if len(documents_store) == 0 or vector_store is None:
-        print("DEBUG: Search failed - Store is empty.")
+    if len(documents_store) == 0:
+        print("DEBUG: Search aborted - documents_store is empty.")
+        return []
+    
+    if faiss_index is None:
+        print("DEBUG: Search aborted - faiss_index is None.")
         return []
         
-    print(f"DEBUG: Searching for: {query}")
-    q_emb = llm_client.get_embeddings([query])
-    if not q_emb: return []
-        
-    q_emb = np_normalize(q_emb)
-    similarities = np.dot(q_emb, vector_store.T)[0]
+    print(f"DEBUG: Searching locally for: '{query}'")
+    model = get_model()
+    q_emb = model.encode([query])
+    faiss.normalize_L2(q_emb)
     
-    k = min(top_k, len(documents_store))
-    top_indices = np.argsort(similarities)[::-1][:k]
+    num_to_search = min(top_k, len(documents_store))
+    D, I = faiss_index.search(q_emb, num_to_search)
     
-    results = [documents_store[idx] for idx in top_indices]
-    print(f"DEBUG: Found {len(results)} matches.")
+    results = []
+    for idx in I[0]:
+        if idx != -1 and idx < len(documents_store):
+            results.append(documents_store[idx])
+            
+    print(f"DEBUG: Found {len(results)} relevant chunks.")
     return results
