@@ -1,31 +1,39 @@
-import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer
+import llm_client
 
-# Load a local lightweight embedding model
-model = SentenceTransformer('all-MiniLM-L6-v2')
-
-embedding_dim = model.get_sentence_embedding_dimension()
-index = faiss.IndexFlatIP(embedding_dim)  # Inner Product (Cosine sim if normalized)
-
-# Maps faiss indices to chunk text and metadata
+# Maps indices to chunk text and metadata
 documents_store = []
+# Holds the embedding vectors
+vector_store = None
 
 def np_normalize(vecs):
-    norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-    return vecs / np.maximum(norms, 1e-10)
+    # vecs can be a list of lists or a 2D numpy array
+    v = np.array(vecs)
+    if v.ndim == 1:
+        v = v.reshape(1, -1)
+    norms = np.linalg.norm(v, axis=1, keepdims=True)
+    return v / np.maximum(norms, 1e-10)
 
 def add_document(filename, chunks):
-    global index, documents_store
+    global documents_store, vector_store
     
     if not chunks:
         return
         
-    embeddings = model.encode(chunks)
+    # Get embeddings from Gemini API
+    embeddings = llm_client.get_embeddings(chunks)
+    if not embeddings:
+        print(f"Failed to get embeddings for {filename}")
+        return
+        
     embeddings = np_normalize(embeddings)
     
     start_idx = len(documents_store)
-    index.add(embeddings)
+    
+    if vector_store is None:
+        vector_store = embeddings
+    else:
+        vector_store = np.vstack([vector_store, embeddings])
     
     for i, chunk in enumerate(chunks):
         documents_store.append({
@@ -39,42 +47,53 @@ def check_duplicate(chunks, threshold=0.98):
     Checks if a highly similar document already exists.
     Returns: (is_duplicate: bool, similar_filename: str)
     """
-    if len(documents_store) == 0 or not chunks:
+    global vector_store
+    
+    if len(documents_store) == 0 or not chunks or vector_store is None:
         return False, None
     
     # Check the first chunk or two to see if they're identical to existing
     check_chunks = chunks[:2]
-    embeddings = model.encode(check_chunks)
+    embeddings = llm_client.get_embeddings(check_chunks)
+    if not embeddings:
+        return False, None
+        
     embeddings = np_normalize(embeddings)
     
-    D, I = index.search(embeddings, 1)
+    # Compute cosine similarity: dot product of normalized vectors
+    # vector_store is (N, D), embeddings is (M, D)
+    # similarities is (M, N)
+    similarities = np.dot(embeddings, vector_store.T)
     
-    # D contains inner products (since normalized, these are cosine similarities)
-    # I contains the faiss indices
-    
-    for i, dists in enumerate(D):
-        if dists[0] > threshold:
-            idx = I[i][0]
-            if idx != -1 and idx < len(documents_store):
-                meta = documents_store[idx]
-                return True, meta["filename"]
+    for i in range(len(embeddings)):
+        max_sim_idx = np.argmax(similarities[i])
+        if similarities[i][max_sim_idx] > threshold:
+            meta = documents_store[max_sim_idx]
+            return True, meta["filename"]
                 
     return False, None
 
 def search(query, top_k=3):
-    if len(documents_store) == 0:
+    global vector_store
+    
+    if len(documents_store) == 0 or vector_store is None:
         return []
         
-    q_emb = model.encode([query])
+    q_emb = llm_client.get_embeddings([query])
+    if not q_emb:
+        return []
+        
     q_emb = np_normalize(q_emb)
     
-    # We may want to bound top_k by len(documents_store)
+    # similarities shape: (1, N)
+    similarities = np.dot(q_emb, vector_store.T)[0]
+    
+    # Get top k indices
     k = min(top_k, len(documents_store))
-    D, I = index.search(q_emb, k)
+    top_indices = np.argsort(similarities)[::-1][:k]
     
     results = []
-    for dist, idx in zip(D[0], I[0]):
-        if idx != -1:
-            results.append(documents_store[idx])
+    for idx in top_indices:
+        results.append(documents_store[idx])
             
     return results

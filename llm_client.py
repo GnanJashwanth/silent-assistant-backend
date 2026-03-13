@@ -10,7 +10,48 @@ api_key = os.getenv("GEMINI_API_KEY")
 
 # Gemini REST API
 GEMINI_MODEL = "gemini-2.5-flash"
+EMBEDDING_MODEL = "text-embedding-004"
 GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+EMBEDDING_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{EMBEDDING_MODEL}:batchEmbedContents"
+
+def get_embeddings(texts: list) -> list:
+    """
+    Calls Google Gemini Embedding API to get vectors for a list of strings.
+    """
+    if not api_key:
+        print("Error: GEMINI_API_KEY not set.")
+        return []
+
+    headers = {"Content-Type": "application/json"}
+    
+    # Prepare batch request
+    requests_list = []
+    for text in texts:
+        requests_list.append({
+            "model": f"models/{EMBEDDING_MODEL}",
+            "content": {"parts": [{"text": text}]}
+        })
+    
+    payload = {"requests": requests_list}
+    
+    try:
+        response = requests.post(
+            f"{EMBEDDING_API_URL}?key={api_key}",
+            json=payload,
+            headers=headers,
+            timeout=120
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            # Extract embeddings from batch response
+            return [item["values"] for item in data["embeddings"]]
+        else:
+            print(f"Embedding API Error ({response.status_code}): {response.text}")
+            return []
+    except Exception as e:
+        print(f"Embedding Connection Error: {str(e)}")
+        return []
 
 def generate_answer(query: str, context_chunks: list) -> str:
     """
