@@ -20,6 +20,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/debug-state")
+async def debug_state():
+    import os
+    files = os.listdir(".")
+    return {
+        "documents_in_store": len(vector_store.documents_store),
+        "vector_store_exists": vector_store.vector_store is not None,
+        "files_in_backend": files,
+        "state_file_path": vector_store.STATE_FILE,
+        "state_file_exists": os.path.exists(vector_store.STATE_FILE)
+    }
+
 @app.get("/")
 async def root():
     return {"message": "Silent Assistant Backend is running!"}
@@ -75,10 +87,16 @@ async def ask_question(query: str = Form(...)):
         
         return {
             "answer": answer,
-            "context": [c["text"] for c in context_chunks]
+            "context": [c["text"] for c in context_chunks],
+            "debug": {
+                "total_docs": len(vector_store.documents_store),
+                "context_size": len(context_chunks)
+            }
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"{str(e)}\n{traceback.format_exc()}")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

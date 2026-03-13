@@ -15,22 +15,31 @@ vector_store = None
 def _save_state():
     global documents_store, vector_store
     try:
+        # Ensure directory exists (relevant for /tmp or custom paths)
+        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
         with open(STATE_FILE, 'wb') as f:
             pickle.dump((documents_store, vector_store), f)
+        print(f"Successfully saved {len(documents_store)} chunks to {STATE_FILE}")
     except Exception as e:
-        print(f"Failed to save state: {e}")
+        print(f"CRITICAL: Failed to save state to {STATE_FILE}: {e}")
 
 def _load_state():
     global documents_store, vector_store
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, 'rb') as f:
-                documents_store, vector_store = pickle.load(f)
-            print(f"Loaded state from {STATE_FILE}: {len(documents_store)} chunks")
+                loaded_docs, loaded_vectors = pickle.load(f)
+                
+                # In-place update to keep the same list object reference for other modules
+                documents_store.clear()
+                documents_store.extend(loaded_docs)
+                vector_store = loaded_vectors
+                
+            print(f"Successfully loaded {len(documents_store)} chunks from {STATE_FILE}")
         except Exception as e:
-            print(f"Failed to load state from {STATE_FILE}: {e}")
+            print(f"CRITICAL: Failed to load state from {STATE_FILE}: {e}")
     else:
-        print(f"State file not found at {STATE_FILE}")
+        print(f"State file NOT FOUND at {STATE_FILE}")
 
 def np_normalize(vecs):
     v = np.array(vecs)
@@ -44,10 +53,13 @@ def add_document(filename, chunks):
     _load_state()
     
     if not chunks:
+        print("Warning: No chunks to add.")
         return
         
+    print(f"Getting embeddings for {len(chunks)} chunks of {filename}...")
     embeddings = llm_client.get_embeddings(chunks)
     if not embeddings:
+        print("CRITICAL: Final embeddings list is empty. API error?")
         return
         
     embeddings = np_normalize(embeddings)
@@ -65,10 +77,9 @@ def add_document(filename, chunks):
             "text": chunk,
             "id": start_idx + i
         })
-    print(f"Processed embeddings for {filename}. Total chunks: {len(documents_store)}")
     
+    print(f"Processed {len(chunks)} chunks. Total in store: {len(documents_store)}")
     _save_state()
-    print(f"Saved state for {filename}")
 
 def check_duplicate(chunks, threshold=0.98):
     _load_state()
@@ -97,10 +108,12 @@ def search(query, top_k=3):
     global vector_store
     
     if len(documents_store) == 0 or vector_store is None:
+        print("Search failed: documents_store or vector_store is empty.")
         return []
         
     q_emb = llm_client.get_embeddings([query])
     if not q_emb:
+        print("Search failed: Could not get embedding for query.")
         return []
         
     q_emb = np_normalize(q_emb)
@@ -113,4 +126,5 @@ def search(query, top_k=3):
     for idx in top_indices:
         results.append(documents_store[idx])
             
+    print(f"Search returned {len(results)} matches for query: '{query}'")
     return results
