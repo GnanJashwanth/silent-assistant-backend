@@ -25,6 +25,7 @@ def get_embeddings(texts: list) -> list:
     headers = {"Content-Type": "application/json"}
     
     # Prepare batch request
+    print(f"Requesting embeddings for {len(texts)} chunks...")
     requests_list = []
     for text in texts:
         requests_list.append({
@@ -45,7 +46,9 @@ def get_embeddings(texts: list) -> list:
         if response.status_code == 200:
             data = response.json()
             # Extract embeddings from batch response
-            return [item["values"] for item in data["embeddings"]]
+            embeddings = [item["values"] for item in data["embeddings"]]
+            print(f"Successfully retrieved {len(embeddings)} embeddings.")
+            return embeddings
         else:
             print(f"Embedding API Error ({response.status_code}): {response.text}")
             return []

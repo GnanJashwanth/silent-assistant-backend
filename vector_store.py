@@ -3,8 +3,9 @@ import llm_client
 import pickle
 import os
 
-# Persistence path for Vercel /tmp
-STATE_FILE = "/tmp/vector_state.pkl"
+# Persistence path - relative to the script for better local compatibility
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATE_FILE = os.path.join(BASE_DIR, "vector_state.pkl")
 
 # Maps indices to chunk text and metadata
 documents_store = []
@@ -25,8 +26,11 @@ def _load_state():
         try:
             with open(STATE_FILE, 'rb') as f:
                 documents_store, vector_store = pickle.load(f)
+            print(f"Loaded state from {STATE_FILE}: {len(documents_store)} chunks")
         except Exception as e:
-            print(f"Failed to load state: {e}")
+            print(f"Failed to load state from {STATE_FILE}: {e}")
+    else:
+        print(f"State file not found at {STATE_FILE}")
 
 def np_normalize(vecs):
     v = np.array(vecs)
@@ -61,8 +65,10 @@ def add_document(filename, chunks):
             "text": chunk,
             "id": start_idx + i
         })
+    print(f"Processed embeddings for {filename}. Total chunks: {len(documents_store)}")
     
     _save_state()
+    print(f"Saved state for {filename}")
 
 def check_duplicate(chunks, threshold=0.98):
     _load_state()
