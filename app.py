@@ -25,11 +25,12 @@ async def debug_state():
     import os
     files = os.listdir(".")
     return {
-        "documents_in_store": len(vector_store.documents_store),
-        "vector_store_exists": vector_store.vector_store is not None,
-        "files_in_backend": files,
+        "memory_docs_count": len(vector_store.documents_store),
+        "faiss_index_ready": vector_store.faiss_index is not None,
+        "files_in_cwd": files,
         "state_file_path": vector_store.STATE_FILE,
-        "state_file_exists": os.path.exists(vector_store.STATE_FILE)
+        "state_file_on_disk": os.path.exists(vector_store.STATE_FILE),
+        "cwd": os.getcwd()
     }
 
 @app.get("/")
