@@ -1,13 +1,34 @@
 import numpy as np
 import llm_client
+import pickle
+import os
+
+# Persistence path for Vercel /tmp
+STATE_FILE = "/tmp/vector_state.pkl"
 
 # Maps indices to chunk text and metadata
 documents_store = []
 # Holds the embedding vectors
 vector_store = None
 
+def _save_state():
+    global documents_store, vector_store
+    try:
+        with open(STATE_FILE, 'wb') as f:
+            pickle.dump((documents_store, vector_store), f)
+    except Exception as e:
+        print(f"Failed to save state: {e}")
+
+def _load_state():
+    global documents_store, vector_store
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, 'rb') as f:
+                documents_store, vector_store = pickle.load(f)
+        except Exception as e:
+            print(f"Failed to load state: {e}")
+
 def np_normalize(vecs):
-    # vecs can be a list of lists or a 2D numpy array
     v = np.array(vecs)
     if v.ndim == 1:
         v = v.reshape(1, -1)
@@ -16,14 +37,13 @@ def np_normalize(vecs):
 
 def add_document(filename, chunks):
     global documents_store, vector_store
+    _load_state()
     
     if not chunks:
         return
         
-    # Get embeddings from Gemini API
     embeddings = llm_client.get_embeddings(chunks)
     if not embeddings:
-        print(f"Failed to get embeddings for {filename}")
         return
         
     embeddings = np_normalize(embeddings)
@@ -41,28 +61,21 @@ def add_document(filename, chunks):
             "text": chunk,
             "id": start_idx + i
         })
+    
+    _save_state()
 
 def check_duplicate(chunks, threshold=0.98):
-    """
-    Checks if a highly similar document already exists.
-    Returns: (is_duplicate: bool, similar_filename: str)
-    """
+    _load_state()
     global vector_store
     
     if len(documents_store) == 0 or not chunks or vector_store is None:
         return False, None
     
-    # Check the first chunk or two to see if they're identical to existing
-    check_chunks = chunks[:2]
-    embeddings = llm_client.get_embeddings(check_chunks)
+    embeddings = llm_client.get_embeddings(chunks[:2])
     if not embeddings:
         return False, None
         
     embeddings = np_normalize(embeddings)
-    
-    # Compute cosine similarity: dot product of normalized vectors
-    # vector_store is (N, D), embeddings is (M, D)
-    # similarities is (M, N)
     similarities = np.dot(embeddings, vector_store.T)
     
     for i in range(len(embeddings)):
@@ -74,6 +87,7 @@ def check_duplicate(chunks, threshold=0.98):
     return False, None
 
 def search(query, top_k=3):
+    _load_state()
     global vector_store
     
     if len(documents_store) == 0 or vector_store is None:
@@ -84,11 +98,8 @@ def search(query, top_k=3):
         return []
         
     q_emb = np_normalize(q_emb)
-    
-    # similarities shape: (1, N)
     similarities = np.dot(q_emb, vector_store.T)[0]
     
-    # Get top k indices
     k = min(top_k, len(documents_store))
     top_indices = np.argsort(similarities)[::-1][:k]
     
