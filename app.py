@@ -20,6 +20,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+async def root():
+    return {"message": "Silent Assistant Backend is running!"}
+
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
     try:
