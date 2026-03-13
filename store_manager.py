@@ -57,30 +57,41 @@ class PersistentStore:
             except Exception as e:
                 print(f"DEBUG ERROR: Load failed: {e}")
 
+    def clear_all(self):
+        print("DEBUG: Clearing all documents and index for a fresh start.")
+        self.documents_store = []
+        self.faiss_index = None
+        if os.path.exists(STATE_FILE):
+            try:
+                os.remove(STATE_FILE)
+                print(f"DEBUG: Deleted state file {STATE_FILE}")
+            except Exception as e:
+                print(f"DEBUG ERROR: Could not delete state file: {e}")
+
     def add_document(self, filename, chunks):
         if not chunks: return
+        
+        # Fresh start for every new document as requested
+        self.clear_all()
         
         model = self._get_model()
         print(f"DEBUG: Processing {len(chunks)} new chunks for {filename}...")
         embeddings = model.encode(chunks)
         faiss.normalize_L2(embeddings)
         
-        start_idx = len(self.documents_store)
-        
-        if self.faiss_index is None:
-            self.faiss_index = faiss.IndexFlatIP(embeddings.shape[1])
-            
+        # Index setup
+        self.faiss_index = faiss.IndexFlatIP(embeddings.shape[1])
         self.faiss_index.add(embeddings)
         
         for i, chunk in enumerate(chunks):
             self.documents_store.append({
                 "filename": filename,
                 "text": chunk,
-                "id": start_idx + i
+                "id": i
             })
             
         self._save_state()
-        print(f"DEBUG: Document {filename} added. Total memory: {len(self.documents_store)}")
+        print(f"DEBUG: Store updated with {filename} (Total: {len(self.documents_store)} chunks)")
 
     def search(self, query, top_k=5):
         if not self.documents_store or self.faiss_index is None:
