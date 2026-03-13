@@ -100,17 +100,37 @@ SILENT ASSISTANT RESPONSE:"""
                 return data["candidates"][0]["content"]["parts"][0]["text"]
             elif response.status_code == 429:
                 # Quota exceeded
-                wait_time = (attempt + 1) * 15
                 if attempt < 2:
+                    wait_time = (attempt + 1) * 15
                     print(f"[Retry] Quota hit, waiting {wait_time}s...")
                     time.sleep(wait_time)
                     continue
                 else:
-                    return "Gemini API quota exceeded. Falling back to raw context:\n\n" + context_text[:1000]
+                    return _smart_fallback(query, context_chunks, "AI Busy (Quota Limit)")
             else:
-                return f"Offline/API Error: I found relevant info in the document but cannot generate a summary. \n\nDirect matches:\n{context_text[:1000]}"
+                return _smart_fallback(query, context_chunks, f"API Error ({response.status_code})")
         except Exception as e:
             if attempt < 2: continue
-            return f"Offline Mode: I cannot reach the AI, but here is what I found in the document:\n\n{context_text[:1000]}"
+            return _smart_fallback(query, context_chunks, "Offline Mode")
     
-    return "Offline Mode: Connection failed. Found relevant sections but could not generate answer."
+    return "Connection failed. Please check your internet or try again in a minute."
+
+def _smart_fallback(query: str, chunks: list, reason: str) -> str:
+    """
+    Shows the most relevant chunk instead of just the first page.
+    """
+    if not chunks:
+        return f"{reason}: No relevant sections found in the document."
+    
+    # Simple heuristic: find a chunk that actually contains some words from the query
+    # (The first chunk is often just the title page)
+    best_chunk = chunks[0]["text"]
+    q_words = [w.lower() for w in query.split() if len(w) > 3]
+    
+    for c in chunks:
+        text = c["text"].lower()
+        if any(w in text for w in q_words):
+            best_chunk = c["text"]
+            break
+            
+    return f"**{reason}** - Showing most relevant section found:\n\n---\n{best_chunk[:1200]}\n---\n\n*Tip: Wait 60 seconds and ask again for a clean summary.*"
