@@ -117,20 +117,30 @@ SILENT ASSISTANT RESPONSE:"""
 
 def _smart_fallback(query: str, chunks: list, reason: str) -> str:
     """
-    Shows the most relevant chunk instead of just the first page.
+    Shows the most relevant section found instead of a raw dump.
     """
     if not chunks:
-        return f"{reason}: No relevant sections found in the document."
+        return f"**{reason}**: No relevant sections found in the document."
     
-    # Simple heuristic: find a chunk that actually contains some words from the query
-    # (The first chunk is often just the title page)
+    # Try to find a specific mention of 'Project Title' or 'Name' if asked
+    q_low = query.lower()
+    is_meta_query = any(x in q_low for x in ["title", "name", "participant", "submitted"])
+    
     best_chunk = chunks[0]["text"]
     q_words = [w.lower() for w in query.split() if len(w) > 3]
     
     for c in chunks:
-        text = c["text"].lower()
-        if any(w in text for w in q_words):
-            best_chunk = c["text"]
+        text = c["text"]
+        text_low = text.lower()
+        # If looking for title/name, prioritize things in quotes or near uppercase words
+        if is_meta_query and ("“" in text or "PROJECT REPORT" in text.upper()):
+            best_chunk = text
+            break
+        if any(w in text_low for w in q_words):
+            best_chunk = text
             break
             
-    return f"**{reason}** - Showing most relevant section found:\n\n---\n{best_chunk[:1200]}\n---\n\n*Tip: Wait 60 seconds and ask again for a clean summary.*"
+    # Take just the first part of the chunk to keep it clean
+    display_text = best_chunk[:1200]
+            
+    return f"**{reason} (AI is busy)**. I found this likely answer in the document:\n\n---\n{display_text}\n---\n\n*Tip: Wait 60 seconds and ask again for the full AI summary.*"

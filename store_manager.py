@@ -8,6 +8,8 @@ from sentence_transformers import SentenceTransformer
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE_DIR, "final_vector_state.pkl")
 
+import threading
+
 class PersistentStore:
     _instance = None
     
@@ -18,14 +20,19 @@ class PersistentStore:
             cls._instance.documents_store = []
             cls._instance.faiss_index = None
             cls._instance._model = None
+            cls._instance.model_ready = False
+            # Start loading model in background immediately
+            threading.Thread(target=cls._instance._get_model, daemon=True).start()
             # Auto-load on init
             cls._instance._load_state()
         return cls._instance
 
     def _get_model(self):
         if self._model is None:
-            print("DEBUG: Loading local model (all-MiniLM-L6-v2)...")
+            print("DEBUG: Loading local model in background... (40s wait)")
             self._model = SentenceTransformer('all-MiniLM-L6-v2')
+            self.model_ready = True
+            print("DEBUG: Local model is READY.")
         return self._model
 
     def _save_state(self):

@@ -24,6 +24,7 @@ app.add_middleware(
 async def debug_state():
     return {
         "memory_docs_count": len(store.documents_store),
+        "model_ready": store.model_ready,
         "index_ready": store.faiss_index is not None,
         "index_count": store.faiss_index.ntotal if store.faiss_index else 0,
         "state_file_disk": os.path.exists(os.path.join(os.path.dirname(__file__), "final_vector_state.pkl")),
